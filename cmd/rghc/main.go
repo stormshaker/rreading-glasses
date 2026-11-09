@@ -58,12 +58,27 @@ func (s *server) Run() error {
 		s.HardcoverAuth = string(bytes.TrimSpace(s.HardcoverAuthFile))
 	}
 
+	// Hardcover's tiers also cap requests per day (5000 on the free tier).
+	// Every HTTP attempt counts, retries included, so the budget sits at the
+	// transport. Once it is spent, upstream calls fail fast and clients are
+	// served from the cache until the next UTC day. The count is persisted in
+	// the cache so a restart cannot reset it. Unlimited unless
+	// RG_HC_DAILY_BUDGET is set.
+	hcDailyBudget := 0
+	if v, e := strconv.Atoi(os.Getenv("RG_HC_DAILY_BUDGET")); e == nil && v > 0 {
+		hcDailyBudget = v
+	}
+	budget := internal.NewDailyBudget(hcDailyBudget, cache)
+
 	hcTransport := internal.ScopedTransport{
 		Host: s.Upstream,
 		RoundTripper: &internal.HeaderTransport{
-			Key:          "Authorization",
-			Value:        s.HardcoverAuth,
-			RoundTripper: http.DefaultTransport,
+			Key:   "Authorization",
+			Value: s.HardcoverAuth,
+			RoundTripper: internal.BudgetTransport{
+				Budget:       budget,
+				RoundTripper: http.DefaultTransport,
+			},
 		},
 	}
 
